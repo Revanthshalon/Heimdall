@@ -1,0 +1,24 @@
+[package]
+name = "Heimdall"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "JustID-Heimdall"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.44.1", default-features = false, features = ["macros", "rt-multi-thread"]}
+axum = { version = "0.8.1" }
+serde = { version = "1.0.219", features = ["derive"]}
+serde_json = { version = "1.0.140" }
+tower-http = { version = "0.6.2", features = ["trace", "cors"]}
+tracing = { version = "0.1.41" }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"]}
+sqlx = { version = "0.8.1", default-features = false, features = ["macros", "runtime-tokio", "postgres", "sqlite", "chrono", "uuid"]}
+chrono = { version = "0.4.40", features = ["serde"]}
+uuid = { version = "1.16.0", features = ["serde", "v4"]}
+config = { version = "0.15.11", features = ["toml", "yaml", "json"]}
