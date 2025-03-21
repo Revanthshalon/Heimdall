@@ -107,7 +107,6 @@ CREATE INDEX idx_relation_definitions_namespace ON relation_definitions (namespa
 CREATE INDEX idx_relation_rules_relation_def ON relation_rules (relation_definition_id);
 CREATE INDEX idx_change_log_entity_type ON change_log (entity_type);
 CREATE INDEX idx_change_log_entity_id ON change_log (entity_id);
-CREATE INDEX idx_relationship_changes_relationship_id ON relationship_changes (relationship_id);
 CREATE INDEX idx_authorization_logs_namespace_id ON authorization_logs (namespace_id);
 CREATE INDEX idx_authorization_logs_relation_id ON authorization_logs (relation_id);
 
