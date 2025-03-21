@@ -1,115 +1,182 @@
-# Google Zanzibar Authorization Service Schema Documentation
+# Heimdall Database Schema Documentation
 
-This document outlines the database schema for implementing a Google Zanzibar-style authorization service. Google Zanzibar is a global authorization system that provides unified access control for services with flexible relationship-based permissions.
+## Overview
 
-## Custom Types
+This document describes the database schema for Heimdall, a comprehensive authorization management system that implements relationship-based access control (ReBAC) following the Zanzibar model. This schema provides the foundation for fine-grained authorization decisions based on relationships between entities.
 
-### rule_type
-Defines the different types of rules that can be used in relation definitions:
-- `direct`: Direct assignments (e.g., user X is a member of group Y)
-- `computed_userset`: Computed relationships (e.g., all editors are also viewers)
-- `tuple_to_userset`: Relationships through another relation (e.g., members of parent folder can access child folders)
-- `intersection`: Requires membership in multiple sets (e.g., must be both a team member AND approved reviewer)
-- `exclusion`: Explicitly denies access (e.g., everyone except blocked users)
+## Zanzibar-style Authorization
 
-### change_type
-Tracks the type of changes made to relationships:
-- `CREATE`: New relationship created
-- `UPDATE`: Existing relationship modified
-- `DELETE`: Relationship removed
+Zanzibar is Google's consistent, global authorization system that supports the principle of "relationships as permissions." It allows complex access control scenarios through flexible relationship declarations between objects and subjects, supporting:
 
-## Tables
+- Direct relationships (user-to-resource)
+- Group-based access patterns
+- Nested group memberships
+- Computed relationships
+- Intersection and exclusion rules
 
-### namespaces
-Defines the top-level objects that can contain relationships.
+## Schema Components
 
-**Purpose**: Organizes objects into logical collections (e.g., documents, folders, organizations).
+### Core Tables
 
-**Example Values**:
-```
-| id                                   | name       | created_at                  | updated_at                  | deleted_at |
-|--------------------------------------|------------|----------------------------|----------------------------|------------|
-| a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d | documents  | 2023-01-15T10:30:00.000Z   | 2023-01-15T10:30:00.000Z   | NULL       |
-| b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e | folders    | 2023-01-15T10:35:00.000Z   | 2023-01-15T10:35:00.000Z   | NULL       |
-| c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f | users      | 2023-01-15T10:40:00.000Z   | 2023-01-15T10:40:00.000Z   | NULL       |
-```
+#### 1. Namespaces (`namespaces`)
+Organizes entities into logical domains for isolation and organization.
+- `id`: Unique identifier
+- `name`: Human-readable namespace name
+- Timestamps for lifecycle management
 
-### relation_definitions
-Defines the types of relationships that can exist between objects.
+#### 2. Relation Definitions (`relation_definitions`)
+Defines the possible relationships between entities within a namespace.
+- `id`: Unique identifier
+- `namespace_id`: The namespace this relation belongs to
+- `relation_name`: The name of the relation (e.g., "owner", "editor", "viewer")
 
-**Purpose**: Specifies possible relationships like "viewer", "editor", "owner", "member", etc.
+#### 3. Relation Rules (`relation_rules`)
+Defines how relations are composed and computed, supporting complex relationship patterns.
+- `id`: Unique identifier
+- `relation_definition_id`: The relation this rule applies to
+- `rule_type`: Type of rule (direct, computed_userset, tuple_to_userset, intersection, exclusion)
+- Various relation references for composition rules
 
-**Example Values**:
-```
-| id                                   | namespace_id                          | relation_name |
-|--------------------------------------|---------------------------------------|---------------|
-| d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | viewer        |
-| e5f6a7b8-c9d0-8e1f-2a3b-4c5d6e7f8g9h | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | editor        |
-| f6a7b8c9-d0e1-9f2a-3b4c-5d6e7f8g9h0i | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | owner         |
-| a7b8c9d0-e1f2-0a3b-4c5d-6e7f8g9h0i1j | b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e  | member        |
-```
+#### 4. Relationships (`relationships`)
+Stores actual relationship tuples between objects and subjects.
+- `namespace_id` & `object_id`: Identify the resource
+- `relation_id`: The type of relationship
+- `subject_namespace_id` & `subject_id`: Identify the subject
+- `subject_relation_id`: For userset-to-userset relationships
 
-### relation_rules
-Defines how relations can be composed and inherited.
+### Audit and Logging
 
-**Purpose**: Implements complex permission patterns like inheritance, computation, and combination of permissions.
+#### 1. Change Log (`change_log`)
+Records all system changes for audit purposes.
+- `version`: Sequential change identifier
+- `change_type`, `entity_type`, `operation`: Classification data
+- `details`: JSON representation of changes
+- User attribution and timestamps
 
-**Example Values**:
-```
-| id                                   | relation_definition_id                | rule_type          | target_namespace_id                    | target_relation_id                     | source_relation_id                     |
-|--------------------------------------|---------------------------------------|--------------------|-----------------------------------------|----------------------------------------|----------------------------------------|
-| b8c9d0e1-f2a3-1b4c-5d6e-7f8g9h0i1j2k | e5f6a7b8-c9d0-8e1f-2a3b-4c5d6e7f8g9h  | computed_userset   | NULL                                    | d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g   | NULL                                   |
-| c9d0e1f2-a3b4-2c5d-6e7f-8g9h0i1j2k3l | a7b8c9d0-e1f2-0a3b-4c5d-6e7f8g9h0i1j  | tuple_to_userset   | b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e   | a7b8c9d0-e1f2-0a3b-4c5d-6e7f8g9h0i1j   | NULL                                   |
-```
-*This example shows: 1) editors also have viewer permissions and 2) members of a folder can access its contents*
+#### 2. Authorization Logs (`authorization_logs`)
+Records access decisions for auditing and analysis.
+- Decision details including subject, object, relation
+- Whether access was granted
+- Contextual information
 
-### relationships
-Stores the actual relationships between objects and subjects.
+## Using This Schema for Zanzibar-style Authorization
 
-**Purpose**: Records who has what permissions on which objects, forming the core of the authorization data.
+### Basic Authorization Flow
 
-**Example Values**:
-```
-| id                                   | namespace_id                          | object_id   | relation_id                            | subject_namespace_id                   | subject_id   | subject_relation_id                   | created_at                  | updated_at                  | deleted_at |
-|--------------------------------------|---------------------------------------|-------------|----------------------------------------|----------------------------------------|--------------|---------------------------------------|----------------------------|----------------------------|------------|
-| d0e1f2a3-b4c5-3d6e-7f8g-9h0i1j2k3l4m | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g   | c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f   | user456      | NULL                                  | 2023-01-20T14:25:00.000Z   | 2023-01-20T14:25:00.000Z   | NULL       |
-| e1f2a3b4-c5d6-4e7f-8g9h-0i1j2k3l4m5n | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | f6a7b8c9-d0e1-9f2a-3b4c-5d6e7f8g9h0i   | c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f   | user789      | NULL                                  | 2023-01-20T14:30:00.000Z   | 2023-01-20T14:30:00.000Z   | NULL       |
-| f2a3b4c5-d6e7-5f8g-9h0i-1j2k3l4m5n6o | b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e  | folder456   | a7b8c9d0-e1f2-0a3b-4c5d-6e7f8g9h0i1j   | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d   | doc123       | NULL                                  | 2023-01-20T14:35:00.000Z   | 2023-01-20T14:35:00.000Z   | NULL       |
-```
-*This example shows: 1) user456 is a viewer of doc123, 2) user789 is an owner of doc123, and 3) doc123 is a member of folder456*
+1. **Setup Relations**
+   - Create namespaces for your application domains
+   - Define relation types within those namespaces
+   - Establish relation rules for complex permission structures
 
-### relationship_changes
-Tracks all changes made to relationships for auditing and synchronization.
+2. **Store Relationships**
+   - Add relationship tuples to establish who has what access
+   - Example: (document:123, viewer, user:bob)
 
-**Purpose**: Provides an immutable log of all permission changes for auditing, versioning, and synchronizing distributed systems.
+3. **Check Permissions**
+   - Query the relationships table with appropriate filters
+   - For complex permissions, traverse relation rules
+   - Record authorization decisions in logs
 
-**Example Values**:
-```
-| change_id                            | relationship_id                       | change_type | namespace_id                          | object_id   | relation_id                            | subject_namespace_id                   | subject_id   | subject_relation_id | previous_data | new_data                             | change_timestamp             |
-|--------------------------------------|---------------------------------------|-------------|---------------------------------------|-------------|----------------------------------------|----------------------------------------|--------------|---------------------|---------------|--------------------------------------|------------------------------|
-| a3b4c5d6-e7f8-6g9h-0i1j-2k3l4m5n6o7p | d0e1f2a3-b4c5-3d6e-7f8g-9h0i1j2k3l4m  | CREATE      | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g   | c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f   | user456      | NULL                | NULL          | {"id":"d0e1f2a3-b4c5-...",...}      | 2023-01-20T14:25:00.000Z     |
-| b4c5d6e7-f8g9-7h0i-1j2k-3l4m5n6o7p8q | d0e1f2a3-b4c5-3d6e-7f8g-9h0i1j2k3l4m  | DELETE      | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g   | c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f   | user456      | NULL                | {"id":"d0e1f2a3-b4c5-...",...} | NULL | 2023-02-15T09:45:00.000Z     |
-```
+### Key Usage Patterns
 
-### authorization_logs
-Records every authorization check for auditing and analysis.
-
-**Purpose**: Provides comprehensive logs of all permission checks, including successes and failures, for security auditing, debugging, and analytics.
-
-**Example Values**:
-```
-| id                                   | timestamp                   | subject_id | namespace_id                          | object_id   | relation_id                            | granted | result_code               | context                                           |
-|--------------------------------------|----------------------------|------------|---------------------------------------|-------------|----------------------------------------|---------|---------------------------|---------------------------------------------------|
-| c5d6e7f8-g9h0-8i1j-2k3l-4m5n6o7p8q9r | 2023-02-10T15:45:30.000Z   | user456    | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | d4e5f6a7-b8c9-7d0e-1f2a-3b4c5d6e7f8g   | true    | GRANTED                   | {"ip":"192.168.1.100","user_agent":"Mozilla/5.0"} |
-| d6e7f8g9-h0i1-9j2k-3l4m-5n6o7p8q9r0s | 2023-02-10T15:50:45.000Z   | user123    | a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d  | doc123      | f6a7b8c9-d0e1-9f2a-3b4c-5d6e7f8g9h0i   | false   | DENIED_NO_RELATIONSHIP   | {"ip":"192.168.1.105","user_agent":"Chrome/98.0"} |
+#### Direct Assignment
+```sql
+-- Grant "admin" access to user "alice" for organization "org1"
+INSERT INTO relationships (namespace_id, object_id, relation_id, subject_namespace_id, subject_id)
+VALUES
+  ((SELECT id FROM namespaces WHERE name = 'organization'),
+   'org1',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'admin'),
+   (SELECT id FROM namespaces WHERE name = 'user'),
+   'alice');
 ```
 
-## Indices and Triggers
+#### Group-based Access
+```sql
+-- First, add user to group
+INSERT INTO relationships (namespace_id, object_id, relation_id, subject_namespace_id, subject_id)
+VALUES
+  ((SELECT id FROM namespaces WHERE name = 'group'),
+   'engineering',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'member'),
+   (SELECT id FROM namespaces WHERE name = 'user'),
+   'bob');
 
-The schema includes various indices to optimize common query patterns and triggers to maintain data integrity:
+-- Then, grant access to the group
+INSERT INTO relationships (namespace_id, object_id, relation_id, subject_namespace_id, subject_id, subject_relation_id)
+VALUES
+  ((SELECT id FROM namespaces WHERE name = 'document'),
+   'doc123',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'editor'),
+   (SELECT id FROM namespaces WHERE name = 'group'),
+   'engineering',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'member'));
+```
 
-- Indices on relationships to quickly look up objects and subjects
-- Triggers to automatically update timestamps when records change
-- Function to log all relationship changes for auditing purposes
+#### Permission Checking
+```sql
+-- Check if user "alice" has "viewer" access to "doc123"
+SELECT EXISTS (
+  SELECT 1 FROM relationships
+  WHERE namespace_id = (SELECT id FROM namespaces WHERE name = 'document')
+  AND object_id = 'doc123'
+  AND relation_id = (SELECT id FROM relation_definitions WHERE relation_name = 'viewer')
+  AND subject_namespace_id = (SELECT id FROM namespaces WHERE name = 'user')
+  AND subject_id = 'alice'
+  AND deleted_at IS NULL
+);
+```
 
-This schema implements the core concepts of Google Zanzibar, providing a flexible and powerful authorization system that can handle complex permission models at scale.
+### Advanced Usage
+
+#### Hierarchical Permissions
+You can define relation rules where one permission implies another:
+
+```sql
+-- Define a rule that "admin" implies "editor"
+INSERT INTO relation_rules (relation_definition_id, rule_type, target_relation_id)
+VALUES (
+  (SELECT id FROM relation_definitions WHERE relation_name = 'editor'), -- editor relation
+  'computed_userset', -- rule type
+  (SELECT id FROM relation_definitions WHERE relation_name = 'admin') -- source relation
+);
+```
+
+#### Access Control Lists
+You can model traditional ACLs by using an intermediary object:
+
+```sql
+-- Create an ACL for document "doc123"
+INSERT INTO relationships (namespace_id, object_id, relation_id, subject_namespace_id, subject_id)
+VALUES
+  ((SELECT id FROM namespaces WHERE name = 'document'),
+   'doc123',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'acl'),
+   (SELECT id FROM namespaces WHERE name = 'acl'),
+   'acl_for_doc123');
+
+-- Add users to the ACL
+INSERT INTO relationships (namespace_id, object_id, relation_id, subject_namespace_id, subject_id)
+VALUES
+  ((SELECT id FROM namespaces WHERE name = 'acl'),
+   'acl_for_doc123',
+   (SELECT id FROM relation_definitions WHERE relation_name = 'viewer'),
+   (SELECT id FROM namespaces WHERE name = 'user'),
+   'charlie');
+```
+
+## Schema Benefits
+
+1. **Flexibility**: Models any permission structure or access control pattern
+2. **Performance**: Optimized with appropriate indexes for permission checks
+3. **Auditability**: Comprehensive audit trail of all changes and access decisions
+4. **Scalability**: Designed for high-throughput authorization systems
+5. **Consistency**: Tracks relationships with clear boundaries and rules
+
+## Implementation Considerations
+
+- Utilize database transactions to ensure consistency when updating related records
+- Consider caching frequent permission checks for performance
+- Implement appropriate application-level logic for more complex permission checks
+- Use the auditing features to meet compliance requirements
+- Consider replication for high availability and performance

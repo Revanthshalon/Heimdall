@@ -13,77 +13,86 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Define custom enumeration types for categorization
+-- rule_type: Defines the types of relationship rules in the system
 CREATE TYPE rule_type AS ENUM ('direct','computed_userset','tuple_to_userset','intersection','exclusion');
+-- change_type: Specifies types of changes made to records for auditing purposes
 CREATE TYPE change_type AS ENUM ('CREATE', 'UPDATE', 'DELETE');
 
 -- Namespaces table: Organizes entities into logical groups
+-- This table establishes separate domains or contexts for entity relationships
 CREATE TABLE IF NOT EXISTS namespaces (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),  -- Unique identifier for the namespace
   name VARCHAR(255) NOT NULL UNIQUE,  -- Unique identifier for the namespace
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMPTZ NULL  -- Supports soft deletion
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the namespace was created
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the namespace was last modified
+  deleted_at TIMESTAMPTZ NULL  -- Supports soft deletion; NULL means active
 );
 
 -- Relation definitions table: Defines possible relations between entities
+-- This table configures what types of relationships can exist between entities
 CREATE TABLE IF NOT EXISTS relation_definitions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),  -- Unique identifier for the relation definition
   namespace_id UUID REFERENCES namespaces(id) ON DELETE CASCADE,  -- Associated namespace
   relation_name VARCHAR(255) NOT NULL,  -- Name of the relation (e.g., "owner", "viewer")
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMPTZ NULL,  -- Supports soft deletion
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the relation was created
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the relation was last modified
+  deleted_at TIMESTAMPTZ NULL,  -- Supports soft deletion; NULL means active
   UNIQUE (namespace_id, relation_name)  -- Relation names must be unique within a namespace
 );
 
 -- Relation rules table: Defines rules for how relations are composed
+-- This table defines how relations between entities are constructed and calculated
 CREATE TABLE IF NOT EXISTS relation_rules (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  relation_definition_id UUID REFERENCES relation_definitions(id) ON DELETE CASCADE,
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),  -- Unique identifier for the rule
+  relation_definition_id UUID REFERENCES relation_definitions(id) ON DELETE CASCADE,  -- The relation this rule applies to
   rule_type rule_type NOT NULL,  -- Type of rule governing this relation
-  target_namespace_id UUID NULL REFERENCES namespaces(id) ON DELETE RESTRICT,
-  target_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL,
-  source_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMPTZ NULL  -- Supports soft deletion
+  target_namespace_id UUID NULL REFERENCES namespaces(id) ON DELETE RESTRICT,  -- Target namespace for the rule
+  target_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL,  -- Target relation for the rule
+  source_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL,  -- Source relation for the rule
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the rule was created
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the rule was last modified
+  deleted_at TIMESTAMPTZ NULL  -- Supports soft deletion; NULL means active
 );
 
 -- Relationships table: Stores actual relationships between entities
+-- This table records the concrete relationships between objects and subjects
 CREATE TABLE IF NOT EXISTS relationships (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),  -- Unique identifier for the relationship
+  namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,  -- Namespace containing the relationship
   object_id VARCHAR(255) NOT NULL,  -- The entity being accessed
-  relation_id UUID NOT NULL REFERENCES relation_definitions(id) ON DELETE RESTRICT,
-  subject_namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE RESTRICT,
+  relation_id UUID NOT NULL REFERENCES relation_definitions(id) ON DELETE RESTRICT,  -- The relation type
+  subject_namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE RESTRICT,  -- Namespace of the subject
   subject_id VARCHAR(255) NOT NULL,  -- The entity requesting access
-  subject_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  deleted_at TIMESTAMPTZ NULL,  -- Supports soft deletion
+  subject_relation_id UUID NULL REFERENCES relation_definitions(id) ON DELETE SET NULL,  -- For userset relationships
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the relationship was created
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the relationship was last modified
+  deleted_at TIMESTAMPTZ NULL,  -- Supports soft deletion; NULL means active
   UNIQUE (namespace_id, object_id, relation_id, subject_namespace_id, subject_id, subject_relation_id)
 );
 
+-- Change log table: Records all changes to the system for auditing purposes
+-- This table maintains a comprehensive audit trail of all modifications
 CREATE TABLE IF NOT EXISTS change_log (
-  version BIGSERIAL PRIMARY KEY,
-  change_type VARCHAR(50) NOT NULL,
-  entity_type VARCHAR(50) NOT NULL,
-  entity_id UUID NOT NULL,
-  operation VARCHAR(10) NOT NULL,
-  details JSONB NULL,
-  user_id UUID NULL,
-  transaction_id UUID NULL,
-  timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  version BIGSERIAL PRIMARY KEY,  -- Incremental version number
+  change_type VARCHAR(50) NOT NULL,  -- Type of change made
+  entity_type VARCHAR(50) NOT NULL,  -- Type of entity changed
+  entity_id UUID NOT NULL,  -- ID of the changed entity
+  operation VARCHAR(10) NOT NULL,  -- Operation performed (INSERT, UPDATE, DELETE)
+  details JSONB NULL,  -- JSON details of the change
+  user_id UUID NULL,  -- User who made the change, if available
+  transaction_id UUID NULL,  -- Transaction identifier
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the change occurred
 );
 
 -- Authorization logs table: Records access decisions
+-- This table keeps a history of authorization decisions for auditing and analysis
 CREATE TABLE IF NOT EXISTS authorization_logs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),  -- Unique identifier for the log entry
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- When the authorization was processed
   subject_id VARCHAR(255) NOT NULL,  -- Entity requesting access
-  namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE NO ACTION,
+  namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE NO ACTION,  -- Namespace of the object
   object_id VARCHAR(255) NOT NULL,  -- Entity being accessed
-  relation_id UUID NOT NULL REFERENCES relation_definitions(id) ON DELETE NO ACTION,
+  relation_id UUID NOT NULL REFERENCES relation_definitions(id) ON DELETE NO ACTION,  -- Requested relation
   granted BOOLEAN NOT NULL,  -- Whether access was granted
   result_code VARCHAR(255) NOT NULL,  -- Reason code for decision
   context JSONB NULL  -- Additional request context information
@@ -124,6 +133,7 @@ CREATE TRIGGER update_relationships_timestamp
 BEFORE UPDATE ON relationships
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
+-- Function to log changes to tables for auditing purposes
 CREATE OR REPLACE FUNCTION log_change()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -156,6 +166,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Triggers to log all changes to key tables
 CREATE TRIGGER log_relationship_change
 AFTER INSERT OR UPDATE OR DELETE ON relationships
 FOR EACH ROW EXECUTE FUNCTION log_change();
