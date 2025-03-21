@@ -1,5 +1,5 @@
 [package]
-name = "Heimdall"
+name = "heimdall"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 path = "src/lib.rs"
 
 [[bin]]
-name = "JustID-Heimdall"
+name = "heimdall"
 path = "src/main.rs"
 
 [dependencies]
