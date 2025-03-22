@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS relation_rules (
 CREATE TABLE IF NOT EXISTS relationship_tuples (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     namespace_id VARCHAR(64) NOT NULL,
-    object_id UUID NOT NULL, -- the object whose permissions are being set (e.g., document_id)
+    object_id VARCHAR(255) NOT NULL, -- the object whose permissions are being set (e.g., document_id)
     relation VARCHAR(64) NOT NULL, -- the permission being granted (e.g., 'viewer')
 
     -- Subject can be a user or object (group, role, etc.)
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS zookies (
     version BIGINT NOT NULL,
     transaction_id UUID NOT NULL,
     shard_id INT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expired_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP + INTERVAL '7 days'
 );
 
@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS transaction_log (
     -- Metadata
     zookie_token VARCHAR(255) NOT NULL,
     payload JSONB NOT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'COMMITED' CHECK (status IN ('PENDING', 'COMMITED', 'FAILED', 'REPLICATED'))
+    status VARCHAR(16) NOT NULL DEFAULT 'COMMITTED' CHECK (status IN ('PENDING', 'COMMITTED', 'FAILED', 'REPLICATED'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_transaction_log_version ON transaction_log (version_number);
@@ -289,11 +289,11 @@ CREATE TABLE IF NOT EXISTS auth_decisions (
 
     -- Performance Metrics
     latency_ms INT NOT NULL,
-    evaluation_path JSONB NOT NULL
+    evaluation_path JSONB NOT NULL,
 
     -- Consistency Info
-    zookie_token VARCHAR(255) NULL
-    waited_for_consistency BOOLEAN NOT NULL DEFAULT FALSE
+    zookie_token VARCHAR(255) NULL,
+    waited_for_consistency BOOLEAN NOT NULL DEFAULT FALSE,
     consistency_wait_ms INT NULL
 );
 
@@ -374,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_cache_zookie ON permissions_cache (max_zookie_ver
 -- Automatically updates the 'updated_at' timestamp field to the current time
 -- Used by triggers to maintain accurate last-modified timestamps
 CREATE OR REPLACE FUNCTION update_timestamp()
-RETURN TRIGGER AS $$
+RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
@@ -383,19 +383,19 @@ $$ LANGUAGE plpgsql;
 
 -- Trigger: update_namespaces_timestamp
 -- Automatically updates the timestamp when a namespace record is modified
-CREATE TRIGGER IF NOT EXISTS update_namespaces_timestamp
+CREATE TRIGGER update_namespaces_timestamp
 BEFORE UPDATE ON namespaces
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 -- Trigger: update_relations_timestamp
 -- Automatically updates the timestamp when a relation record is modified
-CREATE TRIGGER IF NOT EXISTS update_relations_timestamp
+CREATE TRIGGER update_relations_timestamp
 BEFORE UPDATE ON relations
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 -- Trigger: update_relation_rules_timestamp
 -- Automatically updates the timestamp when a relation rule is modified
-CREATE TRIGGER IF NOT EXISTS update_relation_rules_timestamp
+CREATE TRIGGER update_relation_rules_timestamp
 BEFORE UPDATE ON relation_rules
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
@@ -425,7 +425,7 @@ $$ LANGUAGE plpgsql;
 -- Records all data changes to the audit_log table for compliance and security tracking
 -- Captures contextual information including the actor, trace ID, and client details
 CREATE OR REPLACE FUNCTION log_change()
-RETURN TRIGGER AS $$
+RETURNS TRIGGER AS $$
 DECLARE
     current_actor VARCHAR(255);
     current_trace_id UUID;
@@ -493,54 +493,54 @@ $$ LANGUAGE plpgsql;
 
 -- Trigger: log_namespaces_change
 -- Records all changes to namespace definitions in the audit log
-CREATE TRIGGER IF NOT EXISTS log_namespaces_change
+CREATE TRIGGER log_namespaces_change
 AFTER INSERT OR UPDATE OR DELETE ON namespaces
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_relations_change
 -- Records all changes to relation definitions in the audit log
-CREATE TRIGGER IF NOT EXISTS log_relations_change
+CREATE TRIGGER log_relations_change
 AFTER INSERT OR UPDATE OR DELETE ON relations
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_relation_rules_change
 -- Records all changes to relation rules in the audit log
-CREATE TRIGGER IF NOT EXISTS log_relation_rules_change
+CREATE TRIGGER log_relation_rules_change
 AFTER INSERT OR UPDATE OR DELETE ON relation_rules
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_relationship_tuples_change
 -- Records all permission relationship changes in the audit log
-CREATE TRIGGER IF NOT EXISTS log_relationship_tuples_change
+CREATE TRIGGER log_relationship_tuples_change
 AFTER INSERT OR UPDATE OR DELETE ON relationship_tuples
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_zookies_change
 -- Records all consistency token changes in the audit log
-CREATE TRIGGER IF NOT EXISTS log_zookies_change
+CREATE TRIGGER log_zookies_change
 AFTER INSERT OR UPDATE OR DELETE ON zookies
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_transaction_log_change
 -- Records all transaction log changes in the audit log for meta-auditing
-CREATE TRIGGER IF NOT EXISTS log_transaction_log_change
+CREATE TRIGGER log_transaction_log_change
 AFTER INSERT OR UPDATE OR DELETE ON transaction_log
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_replication_status_change
 -- Records all replication status changes for monitoring distributed system health
-CREATE TRIGGER IF NOT EXISTS log_replication_status_change
+CREATE TRIGGER log_replication_status_change
 AFTER INSERT OR UPDATE OR DELETE ON replication_status
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_auth_decisions_change
 -- Records all changes to authorization decision records for compliance tracking
-CREATE TRIGGER IF NOT EXISTS log_auth_decisions_change
+CREATE TRIGGER log_auth_decisions_change
 AFTER INSERT OR UPDATE OR DELETE ON auth_decisions
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
 -- Trigger: log_permissions_cache_change
 -- Records all changes to the permissions cache for debugging and auditing
-CREATE TRIGGER IF NOT EXISTS log_permissions_cache_change
+CREATE TRIGGER log_permissions_cache_change
 AFTER INSERT OR UPDATE OR DELETE ON permissions_cache
 FOR EACH ROW EXECUTE FUNCTION log_change();
