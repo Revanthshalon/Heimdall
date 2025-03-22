@@ -224,3 +224,226 @@ CREATE TABLE IF NOT EXISTS replication_status (
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE', 'DEGRADED')),
     sync_lag_ms INT NULL
 );
+
+-- =================================================================================================
+-- Monitoring and Auditing Tables
+-- =================================================================================================
+
+CREATE TABLE IF NOT EXISTS auth_decisions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Request Details
+    request_id UUID NOT NULL,
+    subject_type VARCHAR(64) NOT NULL,
+    subject_id VARCHAR(255) NOT NULL,
+    namespace_id VARCHAR(64) NOT NULL,
+    object_id VARCHAR(255) NOT NULL,
+    relation VARCHAR(64) NOT NULL,
+
+    -- Decision Details
+    permitted BOOLEAN NOT NULL,
+    cached BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Performance Metrics
+    latency_ms INT NOT NULL,
+    evaluation_path JSONB NOT NULL
+
+    -- Consistency Info
+    zookie_token VARCHAR(255) NULL
+    waited_for_consistency BOOLEAN NOT NULL DEFAULT FALSE
+    consistency_wait_ms INT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_decisions_request ON auth_decisions (request_id);
+CREATE INDEX IF NOT EXISTS idx_auth_decisions_subject ON auth_decisions (subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_auth_decisions_object ON auth_decisions (namespace_id, object_id);
+CREATE INDEX IF NOT EXISTS idx_auth_decisions_timestamp ON auth_decisions (timestamp);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actor VARCHAR(255) NOT NULL,
+    action VARCHAR(64) NOT NULL,
+    resource_type  VARCHAR(64) NOT NULL,
+    resource_id VARCHAR(255) NOT NULL,
+    details JSONB NOT NULL,
+    trace_id UUID NULL,
+    client_ip INET NULL,
+    client_info JSONB NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log (timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log (actor);
+CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log (resource_type, resource_id);
+
+-- =================================================================================================
+-- Performance Optimization Tables
+-- =================================================================================================
+
+CREATE TABLE IF NOT EXISTS permissions_cache (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    namespace_id VARCHAR(64) NOT NULL,
+    object_id VARCHAR(255) NOT NULL,
+    relation VARCHAR(64) NOT NULL,
+    subject_type VARCHAR(64) NOT NULL,
+    subject_id VARCHAR(255) NOT NULL,
+    permitted BOOLEAN NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    valid_until TIMESTAMPTZ NOT NULL,
+    max_zookie_version BIGINT NOT NULL,
+    cache_key VARCHAR(255) NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_permissions_cache_lookup ON permissions_cache (namespace_id, object_id, relation, subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_permissions_cache_expiry ON permissions_cache (valid_until);
+CREATE INDEX IF NOT EXISTS idx_cache_zookie ON permissions_cache (max_zookie_version);
+
+-- =================================================================================================
+-- Functions & Procedures
+-- =================================================================================================
+
+CREATE OR REPLACE FUNCTION update_timestamp()
+RETURN TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Automatic timestamp updates
+CREATE TRIGGER IF NOT EXISTS update_namespaces_timestamp
+BEFORE UPDATE ON namespaces
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER IF NOT EXISTS update_relations_timestamp
+BEFORE UPDATE ON relations
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER IF NOT EXISTS update_relation_rules_timestamp
+BEFORE UPDATE ON relation_rules
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Housekeeping: Cleaning up expired zookies.
+CREATE OR REPLACE FUNCTION cleanup_zookies() RETURNS INTEGER AS $$
+DECLARE
+    zookies_removed INTEGER;
+    cache_removed INTEGER;
+BEGIN
+    -- Remove expired zookies
+    DELETE FROM zookies
+    WHERE expired_at < CURRENT_TIMESTAMP
+    RETURNING COUNT(*) INTO zookies_removed;
+
+    -- Remove expired cache entries
+    DELETE FROM permissions_cache
+    WHERE valid_until < CURRENT_TIMESTAMP
+    RETURNING COUNT(*) INTO cache_removed;
+
+    RETURN zookies_removed + cache_removed;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION log_change()
+RETURN TRIGGER AS $$
+DECLARE
+    current_actor VARCHAR(255);
+    current_trace_id UUID;
+    current_client_ip INET;
+    current_client_info JSONB;
+BEGIN
+    BEGIN
+        current_actor := current_setting('heimdall.actor');
+    EXCEPTION WHEN OTHERS THEN
+        current_actor := 'system';
+    END;
+
+    BEGIN
+        current_trace_id := current_setting('heimdall.trace_id')::UUID;
+    EXCEPTION WHEN OTHERS THEN
+        current_trace_id := NULL;
+    END;
+
+    BEGIN
+        current_client_ip := current_setting('heimdall.client_ip')::INET;
+    EXCEPTION WHEN OTHERS THEN
+        current_client_ip := NULL;
+    END;
+
+    BEGIN
+        current_client_info := current_setting('heimdall.client_info')::JSONB;
+    EXCEPTION WHEN OTHERS THEN
+        current_client_info := NULL;
+    END;
+
+    INSERT INTO audit_log (
+        actor,
+        action,
+        resource_type,
+        resource_id,
+        details,
+        trace_id,
+        client_ip,
+        client_info
+    ) VALUES (
+        current_actor,
+        TG_OP,
+        TG_TABLE_NAME,
+        CASE
+            WHEN TG_OP = 'DELETE' THEN OLD.id
+            ELSE NEW.id::TEXT
+        END,
+        CASE
+            WHEN TG_OP = 'INSERT' THEN to_jsonb(NEW)
+            WHEN TG_OP = 'UPDATE' THEN jsonb_build_object('previous', to_jsonb(OLD), 'new', to_jsonb(NEW))
+            WHEN TG_OP = 'DELETE' THEN to_jsonb(OLD)
+        END,
+        current_trace_id,
+        current_client_ip,
+        current_client_info
+    );
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    ELSE
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Automatic audit logging
+CREATE TRIGGER IF NOT EXISTS log_namespaces_change
+AFTER INSERT OR UPDATE OR DELETE ON namespaces
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_relations_change
+AFTER INSERT OR UPDATE OR DELETE ON relations
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_relation_rules_change
+AFTER INSERT OR UPDATE OR DELETE ON relation_rules
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_relationship_tuples_change
+AFTER INSERT OR UPDATE OR DELETE ON relationship_tuples
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_zookies_change
+AFTER INSERT OR UPDATE OR DELETE ON zookies
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_transaction_log_change
+AFTER INSERT OR UPDATE OR DELETE ON transaction_log
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_replication_status_change
+AFTER INSERT OR UPDATE OR DELETE ON replication_status
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_auth_decisions_change
+AFTER INSERT OR UPDATE OR DELETE ON auth_decisions
+FOR EACH ROW EXECUTE FUNCTION log_change();
+
+CREATE TRIGGER IF NOT EXISTS log_permissions_cache_change
+AFTER INSERT OR UPDATE OR DELETE ON permissions_cache
+FOR EACH ROW EXECUTE FUNCTION log_change();
