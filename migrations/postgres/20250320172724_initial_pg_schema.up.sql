@@ -119,6 +119,20 @@ CREATE TABLE IF NOT EXISTS relation_rules (
 -- Core Permission Data Tables
 -- =================================================================================================
 
+-- Relationship tuples store the actual permission relationships in the system
+-- Each tuple represents a specific permission granted to a subject for an object
+-- Fields:
+--   id: Unique identifier for this permission relationship
+--   namespace_id: Which namespace the object belongs to
+--   object_id: The specific object being accessed
+--   relation: The permission type being granted
+--   subject_type: The type of entity receiving permission (user, group, etc.)
+--   subject_id: The specific entity receiving permission
+--   userset_namespace: For tuple-to-userset rules, which namespace to check
+--   userset_relation: For tuple-to-userset rules, which relation to check
+--   created_at: When this permission was granted
+--   updated_at: When this permission was last modified
+--   zookie_token: Consistency token for distributed validation
 CREATE TABLE IF NOT EXISTS relationship_tuples (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     namespace_id VARCHAR(64) NOT NULL,
@@ -154,6 +168,16 @@ CREATE INDEX IF NOT EXISTS idx_tuples_zookie ON relationship_tuples (zookie_toke
 -- Consistency Management Tables
 -- =================================================================================================
 
+-- Zookies manage consistency tokens for distributed permission validation
+-- Each zookie represents a specific version of a permission relationship
+-- Fields:
+--   token: Unique identifier for this consistency token
+--   timestamp: When this token was created
+--   version: Sequential version number for this token
+--   transaction_id: Which transaction created this token
+--   shard_id: Which database shard contains this token
+--   created_at: When this token was first generated
+--   expired_at: When this token will no longer be valid
 CREATE TABLE IF NOT EXISTS zookies (
     token VARCHAR(255) PRIMARY KEY,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -166,3 +190,37 @@ CREATE TABLE IF NOT EXISTS zookies (
 
 CREATE INDEX IF NOT EXISTS idx_zookies_version ON zookies (version);
 CREATE INDEX IF NOT EXISTS idx_zookies_expires ON zookies (expired_at);
+
+CREATE TABLE IF NOT EXISTS transaction_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version_number BIGINT NOT NULL,
+    operation operation_type NOT NULL,
+
+    namespace_id VARCHAR(64) NOT NULL,
+    object_id VARCHAR(255) NOT NULL,
+    relation VARCHAR(64) NOT NULL,
+    subject_type VARCHAR(64) NOT NULL,
+    subject_id VARCHAR(255) NOT NULL,
+    userset_namespace VARCHAR(64) NULL,
+    userset_relation VARCHAR(64) NULL,
+
+    -- Metadata
+    zookie_token VARCHAR(255) NOT NULL,
+    payload JSONB NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'COMMITED' CHECK (status IN ('PENDING', 'COMMITED', 'FAILED', 'REPLICATED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_transaction_log_version ON transaction_log (version_number);
+CREATE INDEX IF NOT EXISTS idx_transaction_log_status ON transaction_log (status, version_number);
+CREATE INDEX IF NOT EXISTS idx_transaction_log_namespace_object ON transaction_log (namespace_id, object_id);
+
+CREATE TABLE IF NOT EXISTS replication_status (
+    node_id VARCHAR(64) PRIMARY KEY,
+    last_applied_version BIGINT NOT NULL,
+    last_applied_timestamp TIMESTAMPTZ NOT NULL,
+    heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE', 'DEGRADED')),
+    sync_lag_ms INT NULL
+);
