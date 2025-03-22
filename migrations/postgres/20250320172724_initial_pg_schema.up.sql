@@ -191,6 +191,22 @@ CREATE TABLE IF NOT EXISTS zookies (
 CREATE INDEX IF NOT EXISTS idx_zookies_version ON zookies (version);
 CREATE INDEX IF NOT EXISTS idx_zookies_expires ON zookies (expired_at);
 
+-- Transaction log records all changes to permission relationships for consistency and auditability
+-- Fields:
+--   id: Unique identifier for this transaction record
+--   timestamp: When this transaction occurred
+--   version_number: Sequential version number for this transaction
+--   operation: Type of operation (create, update, delete)
+--   namespace_id: Which namespace was affected
+--   object_id: Which object was affected
+--   relation: Which permission type was affected
+--   subject_type: What type of subject was involved
+--   subject_id: Which specific subject was involved
+--   userset_namespace: For tuple-to-userset operations, which namespace to check
+--   userset_relation: For tuple-to-userset operations, which relation to check
+--   zookie_token: Consistency token for this transaction
+--   payload: Complete data associated with this transaction
+--   status: Current state of this transaction (pending, committed, etc.)
 CREATE TABLE IF NOT EXISTS transaction_log (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -215,6 +231,15 @@ CREATE INDEX IF NOT EXISTS idx_transaction_log_version ON transaction_log (versi
 CREATE INDEX IF NOT EXISTS idx_transaction_log_status ON transaction_log (status, version_number);
 CREATE INDEX IF NOT EXISTS idx_transaction_log_namespace_object ON transaction_log (namespace_id, object_id);
 
+-- Replication status tracks the state of database nodes in a distributed system
+-- Fields:
+--   node_id: Unique identifier for this database node
+--   last_applied_version: Latest transaction version applied on this node
+--   last_applied_timestamp: When the latest transaction was applied
+--   heartbeat_at: Last time this node reported its status
+--   is_primary: Whether this node is the primary writer
+--   status: Current operational status of this node
+--   sync_lag_ms: How far behind this node is from the primary (in milliseconds)
 CREATE TABLE IF NOT EXISTS replication_status (
     node_id VARCHAR(64) PRIMARY KEY,
     last_applied_version BIGINT NOT NULL,
@@ -229,6 +254,23 @@ CREATE TABLE IF NOT EXISTS replication_status (
 -- Monitoring and Auditing Tables
 -- =================================================================================================
 
+-- Auth decisions records each permission check for monitoring and auditing
+-- Fields:
+--   id: Unique identifier for this permission check
+--   timestamp: When this permission check occurred
+--   request_id: Identifier linking related permission checks in a single request
+--   subject_type: What type of subject was checked
+--   subject_id: Which specific subject was checked
+--   namespace_id: Which namespace was checked
+--   object_id: Which object was checked
+--   relation: Which permission type was checked
+--   permitted: Whether access was granted
+--   cached: Whether the result came from cache
+--   latency_ms: How long the permission check took
+--   evaluation_path: Record of which rules were evaluated
+--   zookie_token: Consistency token used for this check
+--   waited_for_consistency: Whether the check had to wait for consistency
+--   consistency_wait_ms: How long the check waited for consistency
 CREATE TABLE IF NOT EXISTS auth_decisions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -260,6 +302,18 @@ CREATE INDEX IF NOT EXISTS idx_auth_decisions_subject ON auth_decisions (subject
 CREATE INDEX IF NOT EXISTS idx_auth_decisions_object ON auth_decisions (namespace_id, object_id);
 CREATE INDEX IF NOT EXISTS idx_auth_decisions_timestamp ON auth_decisions (timestamp);
 
+-- Audit log records all administrative and security-relevant actions in the system
+-- Fields:
+--   id: Unique identifier for this audit entry
+--   timestamp: When this action occurred
+--   actor: Who performed the action
+--   action: What type of action was performed
+--   resource_type: What type of resource was affected
+--   resource_id: Which specific resource was affected
+--   details: Complete data about the action
+--   trace_id: Identifier for tracing this action across system components
+--   client_ip: IP address of the client that initiated the action
+--   client_info: Additional client context information
 CREATE TABLE IF NOT EXISTS audit_log (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -281,6 +335,19 @@ CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log (resource_type, resou
 -- Performance Optimization Tables
 -- =================================================================================================
 
+-- Permissions cache stores pre-computed permission check results for fast access
+-- Fields:
+--   id: Unique identifier for this cache entry
+--   namespace_id: Which namespace was checked
+--   object_id: Which object was checked
+--   relation: Which permission type was checked
+--   subject_type: What type of subject was checked
+--   subject_id: Which specific subject was checked
+--   permitted: Whether access was granted
+--   computed_at: When this permission check was originally computed
+--   valid_until: When this cache entry expires
+--   max_zookie_version: Latest consistency token version used in computing this result
+--   cache_key: Hash key for quick lookup of this cache entry
 CREATE TABLE IF NOT EXISTS permissions_cache (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     namespace_id VARCHAR(64) NOT NULL,
@@ -303,6 +370,9 @@ CREATE INDEX IF NOT EXISTS idx_cache_zookie ON permissions_cache (max_zookie_ver
 -- Functions & Procedures
 -- =================================================================================================
 
+-- Function: update_timestamp
+-- Automatically updates the 'updated_at' timestamp field to the current time
+-- Used by triggers to maintain accurate last-modified timestamps
 CREATE OR REPLACE FUNCTION update_timestamp()
 RETURN TRIGGER AS $$
 BEGIN
@@ -311,20 +381,27 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Automatic timestamp updates
+-- Trigger: update_namespaces_timestamp
+-- Automatically updates the timestamp when a namespace record is modified
 CREATE TRIGGER IF NOT EXISTS update_namespaces_timestamp
 BEFORE UPDATE ON namespaces
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
+-- Trigger: update_relations_timestamp
+-- Automatically updates the timestamp when a relation record is modified
 CREATE TRIGGER IF NOT EXISTS update_relations_timestamp
 BEFORE UPDATE ON relations
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
+-- Trigger: update_relation_rules_timestamp
+-- Automatically updates the timestamp when a relation rule is modified
 CREATE TRIGGER IF NOT EXISTS update_relation_rules_timestamp
 BEFORE UPDATE ON relation_rules
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- Housekeeping: Cleaning up expired zookies.
+-- Function: cleanup_zookies
+-- Removes expired consistency tokens and cache entries to maintain database performance
+-- Returns the total number of records removed across both tables
 CREATE OR REPLACE FUNCTION cleanup_zookies() RETURNS INTEGER AS $$
 DECLARE
     zookies_removed INTEGER;
@@ -344,6 +421,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Function: log_change
+-- Records all data changes to the audit_log table for compliance and security tracking
+-- Captures contextual information including the actor, trace ID, and client details
 CREATE OR REPLACE FUNCTION log_change()
 RETURN TRIGGER AS $$
 DECLARE
@@ -411,39 +491,56 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Automatic audit logging
+-- Trigger: log_namespaces_change
+-- Records all changes to namespace definitions in the audit log
 CREATE TRIGGER IF NOT EXISTS log_namespaces_change
 AFTER INSERT OR UPDATE OR DELETE ON namespaces
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_relations_change
+-- Records all changes to relation definitions in the audit log
 CREATE TRIGGER IF NOT EXISTS log_relations_change
 AFTER INSERT OR UPDATE OR DELETE ON relations
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_relation_rules_change
+-- Records all changes to relation rules in the audit log
 CREATE TRIGGER IF NOT EXISTS log_relation_rules_change
 AFTER INSERT OR UPDATE OR DELETE ON relation_rules
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_relationship_tuples_change
+-- Records all permission relationship changes in the audit log
 CREATE TRIGGER IF NOT EXISTS log_relationship_tuples_change
 AFTER INSERT OR UPDATE OR DELETE ON relationship_tuples
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_zookies_change
+-- Records all consistency token changes in the audit log
 CREATE TRIGGER IF NOT EXISTS log_zookies_change
 AFTER INSERT OR UPDATE OR DELETE ON zookies
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_transaction_log_change
+-- Records all transaction log changes in the audit log for meta-auditing
 CREATE TRIGGER IF NOT EXISTS log_transaction_log_change
 AFTER INSERT OR UPDATE OR DELETE ON transaction_log
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_replication_status_change
+-- Records all replication status changes for monitoring distributed system health
 CREATE TRIGGER IF NOT EXISTS log_replication_status_change
 AFTER INSERT OR UPDATE OR DELETE ON replication_status
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_auth_decisions_change
+-- Records all changes to authorization decision records for compliance tracking
 CREATE TRIGGER IF NOT EXISTS log_auth_decisions_change
 AFTER INSERT OR UPDATE OR DELETE ON auth_decisions
 FOR EACH ROW EXECUTE FUNCTION log_change();
 
+-- Trigger: log_permissions_cache_change
+-- Records all changes to the permissions cache for debugging and auditing
 CREATE TRIGGER IF NOT EXISTS log_permissions_cache_change
 AFTER INSERT OR UPDATE OR DELETE ON permissions_cache
 FOR EACH ROW EXECUTE FUNCTION log_change();
